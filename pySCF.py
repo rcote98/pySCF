@@ -7,8 +7,8 @@ Functions:
     - print_header()
 
 Classes:
-    - Timer()
     - HF()
+    - Timer()
 """
 
 from math import erf
@@ -44,22 +44,16 @@ def main() -> None:
         print(f"ERROR: Input file '{args.input_file[0]}' does not exist.")
         sys.exit()
 
+    print(args.read_integrals)
+
     sim = HF(args.input_file[0])    # initialize the program
-    sim.print_sim_info()           # print the information from the input file
-
-    """
-    sim.read_integrals()
-    print("read integrals:")
-    print(sim.O)
-    print("")
-    sim.calc_integrals()
-    print("calculated integrals:")
-    print(sim.O)
-    """
-
-    sim.calc_integrals()
+    sim.print_sim_info()            # print the information from the input file
 
     sim.run_single_point()          # run scf calculation
+
+    print("F:", sim.F)
+    print("P:", sim.P)
+
 
     sim.tm.print()                  # print timers
 
@@ -123,8 +117,6 @@ class HF():
 
 
     """
-    
-
 
     def __init__(self, input_file:str) -> None:
 
@@ -220,7 +212,7 @@ class HF():
         print(" "*sh + f"{'Input  Geometry:':<{textwidth}}")
         print("")
         print(" "*sh + "-"*textwidth)
-        print(" "*sh + f"{'Index':^{eigth}}{'Label':^{eigth}}{'x':^{quart}}{'y':^{quart}}{'z':^{quart}}")
+        print(" "*sh + f"{'Index':^{eigth}}{'Label':^{eigth}}{'x (Ang)':^{quart}}{'y (Ang)':^{quart}}{'z (Ang)':^{quart}}")
         print(" "*sh + "-"*textwidth)
         for at in range(self.nats):
             print(" "*sh + f"{at:^{eigth}}{self.labels[at]:^{eigth}}{self.positions[at][0]:^{quart}.6f}{self.positions[at][1]:^{quart}.6f}{self.positions[at][2]:^{quart}.6f}")
@@ -322,7 +314,7 @@ class HF():
 
         return self.S, self.T, self.V, self.O
 
-    def calc_integrals(self) -> None:
+    def calc_integrals(self, progress=False) -> None:
 
         """ Calculates the integrals using the structure and basis set information. """
 
@@ -426,7 +418,7 @@ class HF():
                                                             x       = rho*g_dist**2 
                                                             bois0   = 0.5*np.sqrt(np.pi/x)*erf(np.sqrt(x))
 
-                                                        self.O[i,j,k,l] += d_iajbkcld*K_ijab*K_klcd*bois0
+                                                        self.O[i,j,k,l] += d_iajbkcld*K_ijab*K_klcd*bois0/np.sqrt(zeta1+zeta2)
 
                                         self.O[j,i,k,l] = self.O[i,j,k,l] # i <-> j
                                         self.O[i,j,l,k] = self.O[i,j,k,l] # l <-> k 
@@ -460,64 +452,77 @@ class HF():
                 read the integrals from the input file?
         """
 
-        # obtain the integrals
-        if read:
-            self.read_integrals()
-        else:
-            self.calc_integrals()
+        K = self.norbs
 
-        # initial value of the energy
+        # starting energy and density matrix, just
+        # to calculate difference with first step
         self.E = 0
+        self.P = np.zeros((K,K))
 
-        # initial guess for density matrix
-        self.P = np.identity(self.norbs)
+        # diagonalize overlap matrix, obtaining
+        # eigenvalue (to be) matrix A and eigenvectors U
+        eigs, U = np.linalg.eigh(self.S)
 
-        # diagonalize overlap matrix
-        self.eigs, self.U = np.linalg.eigh(self.S)
+        # calculate the square root of the A matrix
+        alpha = np.diag(1/np.sqrt(eigs))
 
-        # build X matrix
-        sd = np.diag(self.eigs)
-        sd12 = np.diag(1/np.sqrt(self.eigs))
+        # build the transformation matrix X, transforming back A to S
+        self.X = np.matmul(np.matmul(U,alpha), np.transpose(U))
 
-        self.X = np.matmul(self.U,sd12)
+        # build the core hamiltonian
+        self.Hc = self.T + self.V
 
-        pass
+        # take it as the Fock opeator
+        self.F = self.Hc
+
+        # transform the Fock operator to the orthogonal basis
+        Fp = np.matmul(np.linalg.inv(self.X), np.matmul(self.F, self.X))
+
+        # calculate the transformed coefficient matrix,
+        # obtaining the orbital energies in the process
+        self.orbital_energies, Cp = np.linalg.eigh(Fp)
+
+        # get back the coefficient matrix
+        self.C = np.matmul(self.X,Cp)
 
     def scf_step(self) -> None:
 
         K = self.norbs
 
-        # build the G matrix
-        G = np.zeros((K,K))
-        for u in range(K):
-            for v in range(K):
-                for l in range(K):
-                    for s in range(K):
-                        G[u,v] += self.P[l,s]*(self.O[u,v,s,l] - 0.5*self.O[u,l,s,v])
-
-        # build Fock operator
-        Hc = self.T + self.V
-        F  = self.T + self.V + G
-
-        # diagonalize Fock operator
-        Fp = np.matmul(np.linalg.inv(self.X), np.matmul(F, self.X))
-
-        # coefficient matrix
-        energies, Cp = np.linalg.eigh(Fp)
-        C = np.matmul(self.X,Cp)
-
-        # new total energy
-        self.E = 0
-        for u in range(K):
-            for v in range(K):
-                self.E += 0.5*self.P[u,v]*(Hc[u,v]+F[u,v])
-
         # new density matrix
         self.P = np.zeros((K,K))
-        for l in range(K):
-            for s in range(K):
-                for i in range(int(self.nels/2)):
-                    self.P[l, s] += 2*C[l, i]*np.conjugate(C)[s,i]
+        for i in range(K):
+            for j in range(K):
+                for a in range(int(self.nels/2)):
+                    self.P[i, j] += self.C[i, a]*self.C[j,a]
+
+        # build the G matrix, using the density matrix 
+        # P and the two-electron integrals
+        G = np.zeros((K,K))
+        for i in range(K):
+            for j in range(K):
+                    for k in range(K): # lda
+                        for l in range(K): #sigma
+                           G[i,j] += self.P[k,l]*(2*self.O[i,j,k,l] - self.O[i,k,j,l])
+
+        # build Fock operator
+        self.F  = self.Hc + G
+
+        # transform the Fock operator to the orthogonal basis
+        Fp = np.matmul(np.linalg.inv(self.X), np.matmul(self.F, self.X))
+
+        # calculate the transformed coefficient matrix,
+        # obtaining the orbital energies in the process
+        self.orbital_energies, Cp = np.linalg.eigh(Fp)
+
+        # get back the coefficient matrix
+        self.C = np.matmul(self.X,Cp)
+
+        # calculate the total energy 
+        self.E = 0
+        for i in range(K):
+            for j in range(K):
+                self.E += self.P[i,j]*(self.Hc[i,j]+self.F[i,j])
 
         pass
 
@@ -531,12 +536,13 @@ class HF():
                 self.V_nuc += self.atnums[i]*self.atnums[j]/self.distance_bohr(i,j)
         return self.V_nuc
 
-    def run_single_point(self,
-                        max_iter:int   = 100,
-                        e_thresh:float = 1e-8,
-                        p_thresh:float = 1e-8,
-                        textwidth:int = TEXTW,
-                        textshift:int = TEXTS) -> None:
+    def run_single_point(self,  max_iter:int        = 100,
+                                e_thresh:float      = 1e-8,
+                                p_thresh:float      = 1e-8,
+                                textwidth:int       = TEXTW,
+                                textshift:int       = TEXTS,
+                                read_integrals:bool = False,
+                                debug:bool          = False) -> None:
 
         tm    = self.tm  
         sh    = textshift
@@ -552,11 +558,25 @@ class HF():
         print(" "*sh + f"{'Energy  Threshold  -> ':<{half}}{e_thresh:<{half}.6E}", flush=True)
         print(" "*sh + f"{'Density Threshold  -> ':<{half}}{p_thresh:<{half}.6E}", flush=True)
         print(" "*sh + f"{'Maximum Iterations -> ':<{half}}{max_iter:<{half}}", flush=True)        
-  
-        # set up one non-iterative quantities
+
+        # obtain the integrals
+        if read_integrals:
+            print("\n"+ " "*sh + f"{'Reading Integrals from Input File...':{half}}", end="", flush=True)
+            tm.start("read_ints", parent="single_point_scf")
+            self.read_integrals()
+            t = tm.stop("read_ints", parent="single_point_scf")
+            print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}", flush=True)
+        else:
+            print("\n"+ " "*sh + f"{'Calculating Integrals...':{half}}", end="", flush=True)
+            tm.start("calc_ints", parent="single_point_scf")
+            self.calc_integrals(progress=True)
+            t = tm.stop("calc_ints", parent="single_point_scf")
+            print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}", flush=True)
+    
+        # set up non-iterative quantities
         print("\n"+ " "*sh + f"{'Initial Matrix Setup...':{half}}", end="", flush=True)
         tm.start("scf_setup", parent="single_point_scf")
-        self.scf_setup()
+        self.scf_setup(read=read_integrals)
         t = tm.stop("scf_setup", parent="single_point_scf")
         print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}\n", flush=True)
 
@@ -576,12 +596,12 @@ class HF():
             self.scf_step()
             self.tm.stop("scf_step", parent="single_point_scf")
             
-            self.dE = np.abs(self.E - self.E_old)
+            self.dE = self.E - self.E_old
             self.dP = np.max(np.abs(self.P - self.P_old))
 
             print(" "*sh + f"{it+1:^{quart}}{self.E:^{quart}.8E}{self.dE:^{quart}.8E}{self.dP:^{quart}.8E}")
 
-            if (self.dE < e_thresh) and (self.dP < p_thresh):
+            if (np.abs(self.dE) < e_thresh) and (self.dP < p_thresh):
                 converged = True
                 break        
 
@@ -602,9 +622,9 @@ class HF():
         t = self.tm.stop("nuc_rep", parent="single_point_scf")
         print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}")
 
-        print("\n" + " "*sh + f"{'       Electronic Energy -> ':>{half}}{self.E:>{quart}.8E}{'Ha':<{quart}}")
-        print(" "*sh + f"{'Nuclear Repulsion Energy -> ':>{half}}{self.V_nuc:>{quart}.8E}{'Ha':<{quart}}")
-        print("\n" + " "*sh + f"{'            Total Energy -> ':>{half}}{self.E+self.V_nuc:>{quart}.8E}{'Ha':<{quart}}" + "\n")
+        print("\n" + " "*sh + f"{'       Electronic Energy -> ':>{half}}{self.E:>{quart}.8E}{' Ha':<{quart}}")
+        print(" "*sh + f"{'Nuclear Repulsion Energy -> ':>{half}}{self.V_nuc:>{quart}.8E}{' Ha':<{quart}}")
+        print("\n" + " "*sh + f"{'            Total Energy -> ':>{half}}{self.E+self.V_nuc:>{quart}.8E}{' Ha':<{quart}}" + "\n")
 
 
 class Timer():
