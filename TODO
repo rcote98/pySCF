@@ -1,0 +1,5 @@
+
+- documentar
+- añadir output de matrices scf
+- añadir output de autovalores, autovectores
+- meter soporte para bases externas (gaussian)
