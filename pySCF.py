@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 
-""" Performs closed-shell Hartree-Fock SCF calculations using s-type orbitals only.
-
-Functions:
-    - main()
-
-Classes:
-    - HF()
-"""
+# pySCF.
+# Performs closed-shell Hartree-Fock SCF calculations using s-type orbitals only.
+#
+# Author:   Raúl Coterillo (raulcote98@gmai.com)
+# Version:  November 2021
 
 from math import erf, floor
 import numpy as np
@@ -55,13 +52,13 @@ def main() -> None:
     else:
         BASIS_FILE  = None
 
-    MAXITS          = args.maxits[0]
-    ETHRESH         = args.Ethresh[0]
-    PTHRESH         = args.Pthresh[0]
+    MAXITS          = args.maxits[0]        # max number of SCF iterations
+    ETHRESH         = args.Ethresh[0]       # energy convergence threshold
+    PTHRESH         = args.Pthresh[0]       # density convergence treshold
 
-    READ_INTEGRALS  = args.read_ints
-    WRITE_INTEGRALS = args.write_ints
-    WRITE_SCF       = args.write_SCF
+    READ_INTEGRALS  = args.read_ints        # read integrals from input?
+    WRITE_INTEGRALS = args.write_ints       # write integrals to file?
+    WRITE_SCF       = args.write_SCF        # write SCF matrices to file?
 
     # check if the input files exist
     if not os.path.isfile(INPUT_FILE):
@@ -379,12 +376,16 @@ class HF():
                         for p in range(self.basis_nprims[orb_index]):
                             
                             self.basis_values[orb_index, p, 0] = basis[lab][orb][p][0]
+                            # apply normalization
                             N = np.power(2*self.basis_values[orb_index, p, 0]/np.pi, 3./4.) 
                             self.basis_values[orb_index, p, 1] = N*basis[lab][orb][p][1]
 
                         orb_index += 1
 
-            self.tm.stop("read_input")
+        self.n_1e_ints = int(self.norbs*(self.norbs+1)/2)
+        self.n_2e_ints = int(self.norbs*(self.norbs+1)*(self.norbs**2+self.norbs+2)/8)
+
+        self.tm.stop("read_input")
 
         pass
 
@@ -526,12 +527,11 @@ class HF():
 
             self.tm.start("1e_ints", parent="read_integrals")
 
-            total_1e = int(K*(K+1)/2)
-
             # read overlap integrals
             for j in range(self.norbs):
                 for i in range(j+1):
                     self.S[i,j] = float(f.readline().split()[2])
+                    # symmetry ops
                     self.S[j,i] = self.S[i,j]
 
             # read kinetic integrals
@@ -539,6 +539,7 @@ class HF():
             for j in range(self.norbs):
                 for i in range(j+1):
                     self.T[i,j] = float(f.readline().split()[2])
+                    # symmetry ops
                     self.T[j,i] = self.T[i,j]
 
             # read nuclear integrals
@@ -546,6 +547,7 @@ class HF():
             for j in range(self.norbs):
                 for i in range(j+1):
                     self.V[i,j] = float(f.readline().split()[2])
+                    # symmetry ops
                     self.V[j,i] = self.V[i,j]
 
             self.tm.stop("1e_ints", parent="read_integrals")
@@ -554,8 +556,6 @@ class HF():
             # read two electron integrals
             f.readline() # Two-Electron integrals
 
-            m = 0
-            total = int(K*(K+1)*(K**2+K+2)/8)
             for i in range(K):
                 for j in range(K):
                     if i >= j:
@@ -565,6 +565,8 @@ class HF():
                                     if i*(i+1)/2.+j >= k*(k+1)/2+l:
                                     
                                         self.O[i,j,k,l] = float(f.readline().split()[4])
+
+                                        # symmetry ops
                                         self.O[j,i,k,l] = self.O[i,j,k,l] # i <-> j
                                         self.O[i,j,l,k] = self.O[i,j,k,l] # l <-> k 
                                         self.O[j,i,l,k] = self.O[i,j,k,l] # i <-> j, l<->k
@@ -573,10 +575,7 @@ class HF():
                                         self.O[k,l,j,i] = self.O[i,j,k,l] # ij <-> kl, i <-> j
                                         self.O[l,k,i,j] = self.O[i,j,k,l] # ij <-> kl, l <-> k
                                         self.O[l,k,j,i] = self.O[i,j,k,l] # ij <-> kl, i <-> j, l<->k
-
-                                        m+=1
-
-        print("m=", m)
+   
         self.tm.stop("2e_ints", parent="read_integrals")
         self.tm.stop("read_integrals")
 
@@ -619,11 +618,11 @@ class HF():
         self.tm.start("1e_ints", parent="calc_integrals")
 
         # precalculate some terms to speed up later iterations
-        dist    = np.zeros((K,K), dtype=float) 
-        zeta    = np.zeros((K, self.max_nprim, K, self.max_nprim), dtype=float)
-        xi      = np.zeros((K, self.max_nprim, K, self.max_nprim), dtype=float)
-        normc   = np.zeros((K, self.max_nprim, K, self.max_nprim), dtype=float)
-        gausp   = np.zeros((K, self.max_nprim, K, self.max_nprim, 3), dtype=float)
+        dist    = np.zeros((K,K), dtype=float)                                      # interatomic distances
+        zeta    = np.zeros((K, self.max_nprim, K, self.max_nprim), dtype=float)     # zeta terms
+        xi      = np.zeros((K, self.max_nprim, K, self.max_nprim), dtype=float)     # xi terms
+        normc   = np.zeros((K, self.max_nprim, K, self.max_nprim), dtype=float)     # normalizations
+        gausp   = np.zeros((K, self.max_nprim, K, self.max_nprim, 3), dtype=float)  # gaussian products
 
         # iterate over required primitive pairs        
         for i in range(K):             
@@ -679,6 +678,7 @@ class HF():
                                 
                                 self.V[i,j] += normc[i,a,j,b]*V_iajbN*bois0
 
+                    # symmetry ops
                     self.S[j,i] = self.S[i,j]
                     self.T[j,i] = self.T[i,j]
                     self.V[j,i] = self.V[i,j]
@@ -716,6 +716,7 @@ class HF():
 
                                                         self.O[i,j,k,l] += normc[i,a,j,b]*normc[k,c,l,d]*K_iajb*K_kcld*bois0/np.sqrt(zeta[i,a,j,b]+zeta[k,c,l,d])
 
+                                        # symmetry ops
                                         self.O[j,i,k,l] = self.O[i,j,k,l] # i <-> j
                                         self.O[i,j,l,k] = self.O[i,j,k,l] # l <-> k 
                                         self.O[j,i,l,k] = self.O[i,j,k,l] # i <-> j, l<->k
@@ -965,22 +966,26 @@ class HF():
 
         """ Performs a population (charge) analysis on the system, and prints the results. """
 
-        K     = self.norbs  
         sh    = textshift
         third = int(textwidth/3)
         sixth = int(textwidth/6)
 
-        labs     = self.labels
+        K     = self.norbs 
+        labs  = self.labels
+
+        # calculate mulliken population by orbital
         mull_pop = np.diag(2*np.matmul(self.P, self.S))
         lowd_pop = np.diag(np.matmul(np.linalg.inv(self.X), np.matmul(2*np.matmul(self.P, self.X), self.S)))
+        
+        # add contributions by atom
         mull_ele = np.zeros(self.nats)
         lowd_ele = np.zeros(self.nats)
-
         for o in range(K):
             at = self.basis_centers[o]
             mull_ele[at] += mull_pop[o] 
             lowd_ele[at] += lowd_pop[o] 
         
+        # calculate charges
         mull_ch = self.atnums - mull_ele
         lowd_ch = self.atnums - lowd_ele
             
@@ -1026,25 +1031,25 @@ class HF():
                 for j in range(i+1):
                     f.write(f"{i+1:6d}{j+1:6d}{'':6}{self.Hc[i,j]:>18.{prec}f}\n")
 
-            # write nuclear integrals
+            # write core hamiltonian in orthogonal basis
             f.write("\nCore Hamiltonian (Orthogonal Basis):\n")
             for i in range(self.norbs):
                 for j in range(i+1):
                     f.write(f"{i+1:6d}{j+1:6d}{'':6}{self.Hc0[i,j]:>18.{prec}f}\n")
 
-            # write core hamiltonian
+            # write last fock matrix
             f.write("\nFock Matrix:\n")
             for i in range(self.norbs):
                 for j in range(i+1):
                     f.write(f"{i+1:6d}{j+1:6d}{'':6}{self.F[i,j]:>18.{prec}f}\n")
 
-            # write core hamiltonian
+            # write last fock matrix in orthogonal basis
             f.write("\nFock Matrix (Orthogonal Basis):\n")
             for i in range(self.norbs):
                 for j in range(i+1):
                     f.write(f"{i+1:6d}{j+1:6d}{'':6}{self.F0[i,j]:>18.{prec}f}\n")
 
-            # write core hamiltonian
+            # write last density matrix
             f.write("\nDensity Matrix:\n")
             for i in range(self.norbs):
                 for j in range(i+1):
@@ -1097,7 +1102,10 @@ class HF():
         print("")
         print(" "*sh + f"{'Energy  Threshold  -> ':<{half}}{e_thresh:<{half}.6E}", flush=True)
         print(" "*sh + f"{'Density Threshold  -> ':<{half}}{p_thresh:<{half}.6E}", flush=True)
-        print(" "*sh + f"{'Maximum Iterations -> ':<{half}}{max_iter:<{half}}", flush=True)        
+        print(" "*sh + f"{'Maximum Iterations -> ':<{half}}{max_iter:<{half}}", flush=True)             
+        print("")
+        print(" "*sh + f"{'Number of 1-electron integrals:':{half}}{self.n_1e_ints:<{half}}")
+        print(" "*sh + f"{'Number of 2-electron integrals:':{half}}{self.n_2e_ints:<{half}}")
 
         # obtain the integrals
         if read_integrals: # read integrals from input file
