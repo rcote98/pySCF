@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 
-""" Performs Hartree-Fock quantum chemistry calculations.
+""" Performs closed-shell Hartree-Fock SCF calculations using s-type orbitals only.
 
 Functions:
     - main()
-    - print_header()
 
 Classes:
     - HF()
-    - Timer()
 """
 
 from math import erf, floor
-from typing import Text
 import numpy as np
 import argparse
 import sys, os
 import time
-
-from numpy.linalg import eigh
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
@@ -26,40 +21,55 @@ def main() -> None:
 
     """ Main program loop. """
 
+    # parse command line arguments
     p = argparse.ArgumentParser(
         prog="pySCF.py",
-        description="Performs a Hartree-Fock SCF calculation.",
+        description="Performs a closed-shell Hartree-Fock SCF calculation using s-type orbitals only.",
         epilog="That's all, folks!"
         )
     p.add_argument("input_file", type=str, nargs=1, action="store",
                 help="input file for the program")
-    p.add_argument("-r, --read-integrals", dest="read_ints", action="store_true",
-                    help="read integrals from the input file")
-    p.add_argument("-w, --write-integrals", dest="write_ints", action="store_true",
-                    help="write integrals to a file called 'integrals.txt'")
-    p.add_argument("-s, -SCF, --write-SCF", dest="write_SCF", action="store_true",
-                    help="write SCF matrices to a file called 'SCF.txt'")
-    p.add_argument("-b, --external-basis", dest="basis", type=str, nargs=1, action="store", default=None,
-                    help="reads basis from Gaussian basis file (.gbs)")
+    p.add_argument("-r", "-R", "--read-integrals", dest="read_ints", action="store_true",
+                    help="read integrals from the input file (default: calculate integrals instead)")
+    p.add_argument("-w", "-W", "--write-integrals", dest="write_ints", action="store_true",
+                    help="write integrals to a file called 'integrals.txt' (default: do not write)")
+    p.add_argument("-s", "-S", "-SCF", "--write-SCF", dest="write_SCF", action="store_true",
+                    help="write SCF matrices to a file called 'SCF.txt' (default: do not write)")
+    p.add_argument("-b", "-B", "--external-basis", dest="basis", type=str, nargs=1, action="store", default=None,
+                    help="reads basis from Gaussian basis file (.gbs file from basissetexchange.org)")
+    p.add_argument("-i", "-I", "--max-iterations", dest="maxits", type=int, nargs=1, action="store", default=[100],
+                    help="sets the maximum number of SCF cycles (default: 100)")
+    p.add_argument("-e", "-E", "--energy-threshold", dest="Ethresh", type=float, nargs=1, action="store", default=[1e-8],
+                    help="sets the energy convergence threshold (default: 1E-8 Ha)")
+    p.add_argument("-p", "-P", "--density-threshold", dest="Pthresh", type=float, nargs=1, action="store", default=[1e-8],
+                    help="sets the density matrix convergence threshold (default: 1E-8)")
     args = p.parse_args()
 
     # print the program header
     HF.print_header()                 
 
-    # check if the input file exists
-    if not os.path.isfile(args.input_file[0]):
-        print(f"ERROR: Input file '{args.input_file[0]}' does not exist.")
-        sys.exit()
-
-    # get command line input
+    # format the command line arguments
     INPUT_FILE      = args.input_file[0]
     if args.basis is not None: 
         BASIS_FILE  = args.basis[0]
     else:
         BASIS_FILE  = None
+
+    MAXITS          = args.maxits[0]
+    ETHRESH         = args.Ethresh[0]
+    PTHRESH         = args.Pthresh[0]
+
     READ_INTEGRALS  = args.read_ints
     WRITE_INTEGRALS = args.write_ints
     WRITE_SCF       = args.write_SCF
+
+    # check if the input files exist
+    if not os.path.isfile(INPUT_FILE):
+        print(f"ERROR: Input file '{INPUT_FILE}' does not exist.")
+        sys.exit()
+    if BASIS_FILE is not None and not os.path.isfile(BASIS_FILE):
+        print(f"ERROR: Basis file '{BASIS_FILE}' does not exist.")
+        sys.exit()
 
     # initialize the program (read input information)
     sim = HF(INPUT_FILE, basis_file=BASIS_FILE)
@@ -69,15 +79,16 @@ def main() -> None:
 
     # run scf calculation
     sim.run_single_point(
-                       read_integrals=READ_INTEGRALS,
-                       write_integrals=WRITE_INTEGRALS,
-                       write_SCF=WRITE_SCF
-                       )         
+                        max_iter=MAXITS,
+                        e_thresh=ETHRESH,
+                        p_thresh=PTHRESH,
+                        read_integrals=READ_INTEGRALS,
+                        write_integrals=WRITE_INTEGRALS,
+                        write_SCF=WRITE_SCF
+                        )         
 
     # print timer summary
-    sim.tm.print()                  
-
-    pass
+    sim.tm.print_summary()                  
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
@@ -91,17 +102,23 @@ class HF():
     input_file : str
         input file of the simulation
 
+    basis_file : str        
+        Gaussian external basis set file 
+
+    tm : Timer
+        internal class that stores all execution time information  
+
     nats : int
         number of atoms
 
-    atnums : np.array
+    atnums : np.array[nats]
         atomic numbers
 
-    labels : np.array
+    labels : list[nats]
         atomic labels
 
-    positions : np.array
-        atomic positions
+    positions : np.array[nats,3]
+        atomic positions (in Angstrom)
 
     charge : int
         overall system charge
@@ -115,25 +132,90 @@ class HF():
     max_nprim : int
         max number of primitives per basis function
 
-    bspec : dict{norbs: nd.array}
-        description of the basis functions
+    basis_centers : nd.array[norbs]
+        atomic centers of the basis functions
+
+    basis_nprims : nd.array[norbs]
+        number of primitives per basis function
+
+    basis_values : nd.array[norbs, max_nprim, 2]
+        exponents and contraction coefficients of the primitives
+
+    S : np.array[norbs, norbs]
+        overlap matrix
+
+    T : np.array[norbs, norbs]
+        kinetic energy integral matrix
+    
+    V : np.array[norbs, norbs]
+        potential energy integral matrix
+    
+    O : np.array[norbs, norbs, norbs, norbs]
+        two-electron integral matrix
 
     Methods
     -------
-    __init__(input_file:str) -> None:
+    __init__(input_file:str, basis_file:str=None) -> None:
         Initializes the class and parses all the input file information.
     
-    print_sim_info(textwidth:int=80) -> None:
+    print_header(textwidth=TEXTW, textshift=TEXTS) -> None:
+        prints the program name and authors
+
+    print_sim_info(self, textwidth:int=TEXTW, textshift=TEXTS) -> None:
         Prints a summary of the information in the input file.
 
-    read_integrals(input_file:str) -> list:
+    bohr_geometry(self) -> np.array:
+        returns the system's geometry (self.position) in Bohr
 
-    calc_integrals() -> list:
+    distance_bohr(self, i:int, j:int) -> float:
+        return the distance between two atoms, in Bohr
 
+    distance_angstrom(self, i:int, j:int) -> float:
+        return the distance between two atoms, in Angstrom
 
+    read_integrals(self) -> list:
+        reads the integrals from the input file
 
+    calc_integrals(self) -> list:
+        calculate the integrals using the basis set information
 
+    write_integrals(self, fname:str, prec=16) -> None:
+        writes the integrals to an external file
 
+    nuclear_repulsion(self) -> float:
+        calculates the inter-nuclear repulsion energy
+
+    SCF_setup(self) -> None:
+        creates the transformation matrix and a guess for the density matrix
+
+    SCF_step(self) -> None:    
+        performs an self-consistent field step
+
+    print_orbitals(self, textwidth:int=TEXTW, textshift:int= TEXTS,) -> None:
+        print orbital energies and coefficients 
+    
+    print_population(self, textwidth:int=TEXTW, textshift:int= TEXTS,) -> None:
+        prints a Mulliken/Lowdin population analysis of the orbitals
+
+    write_SCF(self, fname:str, prec=16) -> None:
+        writes the SCF matrices (X, P, Hc, F, etc) to an external file
+
+    run_single_point(self,  max_iter:int        = 100,
+                            e_thresh:float      = 1e-8,
+                            p_thresh:float      = 1e-8,
+                            textwidth:int       = TEXTW,
+                            textshift:int       = TEXTS,
+                            read_integrals:bool = False,
+                            write_integrals:bool= False,
+                            write_SCF:bool      = False) -> None:
+        
+        performs a complete single point calculation.
+    
+    Classes
+    -------
+    Timer()
+        registers the execution time of the different functions
+    
     """
 
     # default printing parameters
@@ -149,13 +231,16 @@ class HF():
         ----------
             input_file : str
                 input file containing all the SCF information
+
+            input_file : str
+                input file containing all the SCF information
         """
 
         
         self.tm = self.Timer(self.TEXTW, self.TEXTS)
         self.input_file = input_file
         self.basis_file = basis_file
-        
+
         # parse input file
         with open(input_file, "r") as f:
 
@@ -182,6 +267,9 @@ class HF():
             f.readline() # Overall charge
             self.charge = int(f.readline().split()[0])
             self.nels   = np.sum(self.atnums) - self.charge
+
+            if self.nels%2 != 0:
+                print("WARNING")
 
             if basis_file is None:
 
@@ -210,11 +298,91 @@ class HF():
                         self.basis_values[orb, p, :] = [float(x) for x in f.readline().split()[:2]]
 
             else:
-                
-                # TODO parse external Gaussian basis set
 
-                pass
+                # read basis info
+                with open(basis_file, "r") as b:
+                    
+                    for _ in range(12): # skip the file header
+                        b.readline()
 
+                    basis = {}
+                    while True:
+
+                        line = b.readline()
+
+                        # check if EOF has been reached
+                        if line == "":
+                            break
+
+
+                        norb  = 0
+                        label, _ = line.split()
+
+                        basis[label] = {} 
+                        end_of_atom  = False
+
+                        # read atom info
+                        while not end_of_atom:
+
+                            line  = b.readline()
+
+                            # check if end of atom is reached                            
+                            if "*" in line:              
+                                end_of_atom = True
+                            
+                            # otherwise, read a new orbital
+                            else:
+
+                                # read orbital information
+                                basis[label][norb] = []    
+                                orb_type, nprim, _ = line.split()
+                                
+                                # if the orbital is s-type, keep it
+                                if orb_type == "S":
+
+                                    # read the primitives for the orbital    
+                                    for p in range(int(nprim)):
+                                        data = [float(x.replace('D', 'E')) for x in b.readline().split()]
+                                        basis[label][norb].append(data)
+                                
+                                # if it is not s-type, discard it
+                                else:
+                                    for p in range(int(nprim)):
+                                        b.readline()
+                                    basis[label].pop(norb)
+
+                                norb += 1
+
+                # adapt to the original data structures
+
+                self.norbs      = 0
+                self.max_nprim  = 0
+
+                for at in self.labels:
+                    self.norbs += len(basis[at])
+                    for orb in basis[at].keys():
+                        if len(basis[at][orb]) > self.max_nprim:
+                            self.max_nprim = len(basis[at][orb])
+
+                self.basis_centers = np.zeros(self.norbs, dtype=int)
+                self.basis_nprims  = np.zeros(self.norbs, dtype=int)
+                self.basis_values  = np.zeros((self.norbs, self.max_nprim, 2), dtype=float)
+
+                orb_index = 0
+                for at in range(self.nats):
+                    lab = self.labels[at]
+                    for orb in basis[lab].keys():
+
+                        self.basis_centers[orb_index]   = at
+                        self.basis_nprims[orb_index]    = len(basis[lab][orb])
+
+                        for p in range(self.basis_nprims[orb_index]):
+                            
+                            self.basis_values[orb_index, p, 0] = basis[lab][orb][p][0]
+                            N = np.power(2*self.basis_values[orb_index, p, 0]/np.pi, 3./4.) 
+                            self.basis_values[orb_index, p, 1] = N*basis[lab][orb][p][1]
+
+                        orb_index += 1
 
             self.tm.stop("read_input")
 
@@ -241,7 +409,7 @@ class HF():
         print(" "*sh + f"{'Raúl Coterillo Ruisánchez':^{textwidth}}")
         print(" "*sh + f"{'raulcote98@gmail.com':^{textwidth}}")
         print(" "*sh + f"{'':^{textwidth}}")
-        print(" "*sh + f"{'October 2021':^{textwidth}}")
+        print(" "*sh + f"{'November 2021':^{textwidth}}")
         print()
         print(" "*sh + "*"*textwidth)
         print()
@@ -265,7 +433,8 @@ class HF():
         print(" "*sh + f"{'~#~#~#~ INPUT FILE INFORMATION ~#~#~#~':^{textwidth}}")
         print("")
         print(" "*sh + f"{'Input file:':{quart}}{self.input_file:>{quart+half}}")
-        if self.basis_file is not None: print(print(" "*sh + f"{'Basis file:':{quart}}{self.basis_file:>{quart+half}}"))
+        if not (self.basis_file is None): 
+            print(" "*sh + f"{'Basis file:':{quart}}{self.basis_file:>{quart+half}}")
         print("")
         print(" "*sh + f"{'Number of Atoms:':{half}}{self.nats:>{half}}")
         print(" "*sh + f"{'Input  Geometry:':<{textwidth}}")
@@ -322,11 +491,20 @@ class HF():
 
         """
         Reads the integrals from the input file.
+        
+        Returns
+        -------
+            S : np.array[norbs, norbs]
+                overlap matrix
 
-        Parameters
-        ----------
-            input_file : str
-                input file containing all the SCF information
+            T : np.array[norbs, norbs]
+                kinetic energy integral matrix
+            
+            V : np.array[norbs, norbs]
+                potential energy integral matrix
+            
+            O : np.array[norbs, norbs, norbs, norbs]
+                two-electron integral matrix
         """
 
         self.tm.start("read_integrals")
@@ -404,9 +582,25 @@ class HF():
 
         return self.S, self.T, self.V, self.O
 
-    def calc_integrals(self) -> None:
+    def calc_integrals(self) -> list:
 
-        """ Calculates the integrals using the structure and basis set information. """
+        """ 
+        Calculates the required integrals using the structure and basis set information.
+        
+        Returns
+        -------
+            S : np.array[norbs, norbs]
+                overlap matrix
+
+            T : np.array[norbs, norbs]
+                kinetic energy integral matrix
+            
+            V : np.array[norbs, norbs]
+                potential energy integral matrix
+            
+            O : np.array[norbs, norbs, norbs, norbs]
+                two-electron integral matrix
+         """
 
         self.tm.start("calc_integrals")
 
@@ -543,8 +737,10 @@ class HF():
 
         Parameters
         ----------
-            input_file : str
-                input file containing all the SCF information
+            fname : str
+                name of the file where the integrals will be written
+            prec : int (default: 16)
+                decimal precision with which to write the matrix values
         """
 
         self.tm.start("write_integrals")
@@ -600,7 +796,13 @@ class HF():
 
     def nuclear_repulsion(self) -> float:
 
-        """ Calculates the nuclear repulsion energy. """
+        """ 
+        Calculates the nuclear repulsion energy. 
+        
+        Returns
+        -------
+            the nuclear repulsion energy, in Ha
+        """
 
         self.V_nuc = 0
         for i in range(self.nats-1):
@@ -611,13 +813,9 @@ class HF():
     def SCF_setup(self) -> None:
 
         """
-        Set up all the SCF reusable variables, such as 
-        the integrals and the transformation matrix.
-
-        Parameters
-        ----------
-            read : bool (default: True)
-                read the integrals from the input file?
+        Sets up all the SCF reusable variables, such as 
+        the integrals and the transformation matrix, as
+        class attributes.
         """
 
         K = self.norbs
@@ -661,8 +859,16 @@ class HF():
             for j in range(K):
                 self.E += self.P[i,j]*(self.Hc[i,j]+self.F[i,j])
 
-
     def SCF_step(self) -> None:
+
+        """
+        Performs a self-consistent field step, meaning:
+            - it recalculates the density matrix P
+            - builds the G matrix
+            - builds and transforms the Fock matrix F 
+            - diagonalizes it and obtains the orbitals
+            - calculates the electronic energy
+        """
 
         K = self.norbs
 
@@ -701,15 +907,15 @@ class HF():
             for j in range(K):
                 self.E += self.P[i,j]*(self.Hc[i,j]+self.F[i,j])
 
-        pass
-
     # ========================================================================================= #
     #                                                                                           #
     #   Printing functions related with the SCF energy calculation                              #
     #                                                                                           #
     # ========================================================================================= #
 
-    def print_orbitals(self, textwidth:int=TEXTW, textshift:int= TEXTS,) -> None:
+    def print_orbitals(self, textwidth:int=TEXTW, textshift:int= TEXTS) -> None:
+
+        """ Prints orbital information, i.e the energies and coefficients. """
 
         sh    = textshift
         third = int(textwidth/3)
@@ -755,18 +961,18 @@ class HF():
 
         pass
 
-    def print_atomic_charges(self, textwidth:int=TEXTW, textshift:int= TEXTS,) -> None:
+    def print_population(self, textwidth:int=TEXTW, textshift:int= TEXTS,) -> None:
 
+        """ Performs a population (charge) analysis on the system, and prints the results. """
 
         K     = self.norbs  
         sh    = textshift
         third = int(textwidth/3)
         sixth = int(textwidth/6)
-        eigth = int(textwidth/8)
 
         labs     = self.labels
         mull_pop = np.diag(2*np.matmul(self.P, self.S))
-        lowd_pop = np.diag(np.matmul(np.linalg.inv(self.X), np.matmul(2*self.P, self.X)))
+        lowd_pop = np.diag(np.matmul(np.linalg.inv(self.X), np.matmul(2*np.matmul(self.P, self.X), self.S)))
         mull_ele = np.zeros(self.nats)
         lowd_ele = np.zeros(self.nats)
 
@@ -793,12 +999,14 @@ class HF():
     def write_SCF(self, fname:str, prec=16) -> None:
 
         """
-        Writes the stored integrals in a file. 
+        Writes the SCF matrices (X, P, F, Hc, etc) in a file. 
 
         Parameters
         ----------
-            input_file : str
-                input file containing all the SCF information
+            fname : str
+                file where to write the matrices
+            prec : int (default: 16)
+                decimal precision with which to write the matrix values
         """
 
         K = self.norbs
@@ -857,6 +1065,25 @@ class HF():
                                 write_integrals:bool= False,
                                 write_SCF:bool      = False) -> None:
 
+        """
+        Performs a complete single point calculation 
+        
+        Parameters
+        ----------
+            max_iter : int (default: 100)
+                maximum number of SCF iterations
+            e_thresh : float (default: 1e-8)
+                convergence threshold for the energy
+            p_thresh : float (default: 1e-8)
+                convergence threshold for the density matrix
+            read_integrals: bool (default: False)
+                whether to read integrals from the input (or calculate them)
+            write_integrals: bool (default: False)
+                whether to write integrals to an external file (integrals.txt)
+            write_SCF: bool (default: False)
+                whether to write SCF matrices to an external file (SCF.txt)
+        """
+
         tm    = self.tm  
         sh    = textshift
         half  = int(textwidth/2)
@@ -873,13 +1100,13 @@ class HF():
         print(" "*sh + f"{'Maximum Iterations -> ':<{half}}{max_iter:<{half}}", flush=True)        
 
         # obtain the integrals
-        if read_integrals:
+        if read_integrals: # read integrals from input file
             print("\n"+ " "*sh + f"{'Reading Integrals from Input File...':{half}}", end="", flush=True)
             tm.start("read_ints", parent="single_point_scf")
             self.read_integrals()
             t = tm.stop("read_ints", parent="single_point_scf")
             print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}", flush=True)
-        else:
+        else: # calculate integrals using geometry and basis set information
             print("\n"+ " "*sh + f"{'Calculating Integrals...':{half}}", end="", flush=True)
             tm.start("calc_ints", parent="single_point_scf")
             self.calc_integrals()
@@ -906,22 +1133,26 @@ class HF():
         print(" "*sh + "-"*textwidth)
         print(" "*sh + f"{'Iteration':^{quart}}{'Energy':^{quart}}{'dE':^{quart}}{'max(dP)':^{quart}}")
         print(" "*sh + "-"*textwidth)
-
         converged = False
         for it in range(max_iter):
 
+            # save current E and P
             self.E_old = self.E
             self.P_old = self.P
 
+            # perform SCF step
             self.tm.start("scf_step", parent="single_point_scf")
             self.SCF_step()
-            self.tm.stop("scf_step", parent="single_point_scf")
+            self.tm.stop("scf_step", parent="single_point_scf")            
             
+            # calculate E and P differences
             self.dE = self.E - self.E_old
             self.dP = np.max(np.abs(self.P - self.P_old))
 
+            # print iteration info
             print(" "*sh + f"{it+1:^{quart}}{self.E:^{quart}.8E}{self.dE:^{quart}.8E}{self.dP:^{quart}.8E}")
 
+            # check convergence
             if (np.abs(self.dE) < e_thresh) and (self.dP < p_thresh):
                 converged = True
                 break        
@@ -931,37 +1162,45 @@ class HF():
         self.last_converged  = converged
         t = tm.stop("single_point_scf")
 
+        # check if SCF procedure converged
         if converged:
             print("\n" + " "*sh + f"{'SCF CYCLE CONVERGED!':^{half}}{f'{it+1} iteration in {t:.6f} s':^{half}}")
+        
+            # calculate nuclear repulsion energy
+            print("\n" + " "*sh + f"{'Nuclear Repulsion Calculation...':{half}}", end="")
+            self.tm.start("nuc_rep", parent="single_point_scf")
+            self.nuclear_repulsion()
+            t = self.tm.stop("nuc_rep", parent="single_point_scf")
+            print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}")
+
+            if write_SCF: # write SCF matrices if needed
+                print("\n"+ " "*sh + f"{'Writing SCF Matrices to File...':{half}}", end="", flush=True)
+                tm.start("write_SCF", parent="single_point_scf")
+                self.write_SCF("SCF.txt")
+                t = tm.stop("write_SCF", parent="single_point_scf")
+                print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}\n", flush=True)
+                print(" "*sh + f"{'Saved to SCF.txt':^{textwidth}}", flush=True)
+
+            # print out energy summary
+            print("\n" + " "*sh + f"{'       Electronic Energy -> ':>{half}}{self.E:>{quart}.8E}{' Ha':<{quart}}")
+            print(" "*sh + f"{'Nuclear Repulsion Energy -> ':>{half}}{self.V_nuc:>{quart}.8E}{' Ha':<{quart}}")
+            print("\n" + " "*sh + f"{'            Total Energy -> ':>{half}}{self.E+self.V_nuc:>{quart}.8E}{' Ha':<{quart}}" + "\n")
+
+            # print orbital coefficients
+            tm.start("orb_print", parent="single_point_scf")
+            self.print_orbitals()
+            tm.stop("orb_print", parent="single_point_scf")
+
+            # print population charge analysis
+            tm.start("pop_analysis", parent="single_point_scf")
+            self.print_population()
+            tm.stop("pop_analysis", parent="single_point_scf")
+
         else:
             print("\n" + " "*sh + f"{'SCF CONVERGENCE FAILED!':^{half}}{f'{it+1} iteration in {t:.6f} s':^{half}}")
-
-        # calculate nuclear repulsion energy
-        print("\n" + " "*sh + f"{'Nuclear Repulsion Calculation...':{half}}", end="")
-        self.tm.start("nuc_rep", parent="single_point_scf")
-        self.nuclear_repulsion()
-        t = self.tm.stop("nuc_rep", parent="single_point_scf")
-        print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}")
-
-        if write_SCF:
-            print("\n"+ " "*sh + f"{'Writing SCF Matrices to File...':{half}}", end="", flush=True)
-            tm.start("write_SCF", parent="single_point_scf")
-            self.write_SCF("SCF.txt")
-            t = tm.stop("write_SCF", parent="single_point_scf")
-            print(f"{'DONE!':>{quart}}{f'{t:.6f} s':>{quart}}\n", flush=True)
-            print(" "*sh + f"{'Saved to SCF.txt':^{textwidth}}", flush=True)
-
-        print("\n" + " "*sh + f"{'       Electronic Energy -> ':>{half}}{self.E:>{quart}.8E}{' Ha':<{quart}}")
-        print(" "*sh + f"{'Nuclear Repulsion Energy -> ':>{half}}{self.V_nuc:>{quart}.8E}{' Ha':<{quart}}")
-        print("\n" + " "*sh + f"{'            Total Energy -> ':>{half}}{self.E+self.V_nuc:>{quart}.8E}{' Ha':<{quart}}" + "\n")
-
-        tm.start("orb_print", parent="single_point_scf")
-        self.print_orbitals()
-        tm.stop("orb_print", parent="single_point_scf")
-
-        tm.start("pop_analysis", parent="single_point_scf")
-        self.print_atomic_charges()
-        tm.stop("pop_analysis", parent="single_point_scf")
+            print("\n" + " "*sh + f"{'You should check your input files,':^{textwidth}}")
+            print(" "*sh + f"{'increase the number of iterations or':^{textwidth}}")
+            print(" "*sh + f"{'decrease the convergence thresholds.':^{textwidth}}\n")
 
     # ========================================================================================= #
     #                                                                                           #
@@ -970,6 +1209,32 @@ class HF():
     # ========================================================================================= #
 
     class Timer():
+
+        """
+        Subclass that keeps track of function execution times. 
+
+        Attributes
+        ----------
+        times : dict
+            timer information
+
+        counter : func        
+            function used to measure the time, in seconds
+
+        Methods
+        -------
+        __init__(self, textwidth:int, textshift:int, counter=time.perf_counter) -> None:
+            Initializes the class
+        
+        def start(self, timer_name:str, parent:str=None) -> None:
+            starts a timer
+
+        def stop(self, timer_name:str, parent:str=None) -> float:
+            stops a timer and returns delta with last start
+
+        def print_summary(self) -> None:
+            print a summary of the timers
+        """
 
         def __init__(self, textwidth:int, textshift:int, counter=time.perf_counter) -> None:
 
@@ -1008,7 +1273,7 @@ class HF():
 
             return delta
 
-        def print(self) -> None:
+        def print_summary(self) -> None:
 
             sh    = self.textshift
             quart = int(self.textwidth/4)

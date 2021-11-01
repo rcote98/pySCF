@@ -1,0 +1,75 @@
+
+ If you downloaded data from the basis set
+ exchange or used the basis set exchange python library, please cite:
+
+pritchard2019a
+    Pritchard, Benjamin P., Altarawy, Doaa, Didier, Brett, Gibsom, Tara
+            D., Windus, Theresa L.
+    A New Basis Set Exchange: An Open, Up-to-date Resource for the
+            Molecular Sciences Community
+    J. Chem. Inf. Model., 59, 4814-4820 (2019)
+    10.1021/acs.jcim.9b00725
+
+feller1996a
+    Feller, David
+    The role of databases in support of computational chemistry
+            calculations
+    J. Comput. Chem., 17, 1571-1586 (1996)
+    10.1002/(SICI)1096-987X(199610)17:13<1571::AID-JCC9>3.0.CO;2-P
+
+schuchardt2007a
+    Schuchardt, Karen L., Didier, Brett T., Elsethagen, Todd, Sun, Lisong,
+            Gurumoorthi, Vidhya, Chase, Jared, Li, Jun, Windus, Theresa L.
+    Basis Set Exchange: A Community Database for Computational Sciences
+    J. Chem. Inf. Model., 47, 1045-1052 (2007)
+    10.1021/ci600510j
+
+
+ References for the basis set
+
+ H
+     Sapporo-DZP
+         yamamoto1992a noro2003a
+
+ He
+     Sapporo-DZP
+         moriyamaXXXXa noro1997a
+
+ Li,Be
+     Sapporo-DZP
+         moriyamaXXXXa noro2008a noro2003a
+
+
+
+moriyamaXXXXa
+    Moriyama, H., Tatewaki, H.
+    unpublished
+    As referenced in the Sapporo data set
+
+noro1997a
+    Noro, Takeshi, Sekiya, Masahiro, Koga, Toshikatsu
+    Contracted polarization functions for the atoms helium through neon
+    Theor. Chem. Acc., 98, 25-32 (1997)
+    10.1007/s002140050274
+
+noro2003a
+    Noro, Takeshi, Sekiya, Masahiro, Koga, Toshikatsu
+    Correlating basis sets for the H atom and the alkali-metal atoms from
+            Li to Rb
+    Theor. Chem. Acc., 109, 85-90 (2003)
+    10.1007/s00214-002-0425-z
+
+noro2008a
+    Noro, Takeshi, Sekiya, Masahiro, Koga, Toshikatsu
+    Core-valence correlating basis sets for alkali and alkaline earth
+            metal atoms
+    Theor. Chem. Acc., 121, 289-295 (2008)
+    10.1007/s00214-008-0476-x
+
+yamamoto1992a
+    Yamamoto, Hironori, Matsuoka, Osamu
+    Accurately Energy-Optimized Gaussian Basis Sets for Hydrogen 1s
+            through 5g Orbitals
+    Bull. Univ. Electro. Comm., 5, 23-34 (1992)
+    In Japanese. Citation at https://ci.nii.ac.jp/naid/40004737908/en/
+
